@@ -1,4 +1,3 @@
-
 import torch
 import torch.nn as nn
 from torch.nn.init import xavier_uniform_, zeros_
@@ -29,7 +28,7 @@ def flattenDetection_out(semi: torch.Tensor) -> torch.Tensor:
     Flatten detection output
 
     :param semi:
-        output from detector head
+        Output from detector head
         tensor (batch_size, 65, Hc, Wc)
 
     :return:
@@ -37,14 +36,13 @@ def flattenDetection_out(semi: torch.Tensor) -> torch.Tensor:
         tensor (batch_size, H, W)
     '''
 
-    # 应用 softmax 函数
+    # Apply softmax
     dense = nn.functional.softmax(semi, dim=1)  # [batch_size, 65, Hc, Wc]
 
-    # 移除 dustbin 类
+    # Remove dustbin class
     nodust = dense[:, :-1, :, :]  # [batch_size, 64, Hc, Wc]
 
-    # 使用 DepthToSpace
-
+    # Use DepthToSpace
     heatmap = depth_to_space(nodust, 8)  # [batch_size, C, H, W]
 
     return heatmap
@@ -112,43 +110,41 @@ class SuperPointNet_gauss22(torch.nn.Module):
 
         resized_desc = F.interpolate(desc, size=confidence_map.shape[2:], mode='bicubic', align_corners=True)
 
-
-
-        dn = torch.norm(resized_desc, p=2, dim=1, keepdim=True)  # 计算范数
-        fused_descriptor = resized_desc.div(dn + 1e-8)  # 除以范数进行归一化，避免除以零
+        dn = torch.norm(resized_desc, p=2, dim=1, keepdim=True)  # Compute the norm
+        fused_descriptor = resized_desc.div(dn + 1e-8)  # Divide by norm to normalize, avoid division by zero
 
         return confidence_map, fused_descriptor
 
 
 def nms_and_filter(keypoints, descriptors, confidence_map, nms_radius=5, border_margin=8):
     """
-    对特征点进行非极大值抑制和边界点过滤
-    :param keypoints: 原始特征点坐标
-    :param descriptors: 原始特征点描述符
-    :param confidence_map: 置信度图
-    :param nms_radius: 非极大值抑制的半径
-    :param border_margin: 边界过滤的像素宽度
-    :return: 经过NMS和边界过滤后的特征点和描述符
+    Perform Non-Maximum Suppression and boundary point filtering
+    :param keypoints: Original keypoint coordinates
+    :param descriptors: Original keypoint descriptors
+    :param confidence_map: Confidence map
+    :param nms_radius: Non-Maximum Suppression radius
+    :param border_margin: Border margin width in pixels
+    :return: Filtered keypoints and descriptors after NMS and boundary filtering
     """
     H, W = confidence_map.shape
     mask = np.zeros_like(confidence_map, dtype=bool)
 
-    # 非极大值抑制: 遍历每个特征点，在其半径内检查更高的置信度值
+    # Non-Maximum Suppression: Iterate over keypoints and check for higher confidence values within the radius
     for y, x in keypoints:
         if mask[y, x] or y < border_margin or x < border_margin or y >= H - border_margin or x >= W - border_margin:
             continue
 
-        # 获取局部区域的置信度
+        # Get local patch confidence
         local_patch = confidence_map[max(0, y - nms_radius):min(H, y + nms_radius + 1),
                       max(0, x - nms_radius):min(W, x + nms_radius + 1)]
 
-        # 如果中心点不是局部最大值，则忽略此点
+        # If the center is not the local maximum, skip this point
         if confidence_map[y, x] < np.max(local_patch):
             continue
 
         mask[y, x] = True
 
-    # 根据mask过滤特征点和描述符
+    # Filter keypoints and descriptors using the mask
     keypoints_filtered = keypoints[mask[keypoints[:, 0], keypoints[:, 1]]]
     descriptors_filtered = descriptors[mask[keypoints[:, 0], keypoints[:, 1]]]
 
@@ -158,19 +154,19 @@ def nms_and_filter(keypoints, descriptors, confidence_map, nms_radius=5, border_
 def extract_superpoint_features(confidence_map, descriptor_map, confidence_threshold=0.005, nms_radius=4,
                                 border_margin=8):
     """
-    提取 SuperPoint 特征点和描述符，使用非极大值抑制和边界过滤
-    :param confidence_map: SuperPoint 网络的置信度图 (H, W)
-    :param descriptor_map: SuperPoint 网络的描述符图 (H, W, D) D 表示描述符维度
-    :param confidence_threshold: 保留特征点的置信度阈值
-    :param nms_radius: NMS的半径
-    :param border_margin: 边界过滤的像素宽度
-    :return: 筛选后的特征点坐标和对应的描述符
+    Extract SuperPoint keypoints and descriptors, using Non-Maximum Suppression and boundary filtering
+    :param confidence_map: SuperPoint network confidence map (H, W)
+    :param descriptor_map: SuperPoint network descriptor map (H, W, D) D is descriptor dimension
+    :param confidence_threshold: Confidence threshold for keypoints
+    :param nms_radius: NMS radius
+    :param border_margin: Border filtering width in pixels
+    :return: Filtered keypoint coordinates and corresponding descriptors
     """
-    # 找到所有 confidence_map 大于指定阈值的点
+    # Find all points with confidence_map greater than the threshold
     keypoints = np.argwhere(confidence_map > confidence_threshold)
     descriptors = descriptor_map[keypoints[:, 0], keypoints[:, 1]]
 
-    # 执行 NMS 和 边界过滤
+    # Perform NMS and border filtering
     keypoints, descriptors = nms_and_filter(keypoints, descriptors, confidence_map, nms_radius, border_margin)
 
     return keypoints, descriptors
@@ -178,71 +174,67 @@ def extract_superpoint_features(confidence_map, descriptor_map, confidence_thres
 
 def resize_and_crop(image: np.ndarray, target_height: int = 480, target_width: int = 640) -> np.ndarray:
     """
-    检查图像尺寸，并将其裁剪并等比缩放至目标尺寸。
+    Check the image size, and crop and scale it to the target size while maintaining the aspect ratio.
 
-    :param image: 输入的图像，形状为 (H, W)
-    :param target_height: 目标高度
-    :param target_width: 目标宽度
-    :return: 处理后的图像，形状为 (target_height, target_width)
+    :param image: Input image, shape (H, W)
+    :param target_height: Target height
+    :param target_width: Target width
+    :return: Processed image, shape (target_height, target_width)
     """
     h, w = image.shape[:2]
 
-    # 计算缩放比例，保持长宽比
+    # Calculate scale to maintain aspect ratio
     scale = min(target_height / h, target_width / w)
 
-    # 先进行缩放，保持图像的长宽比
+    # First resize to maintain aspect ratio
     new_h, new_w = int(h * scale), int(w * scale)
     resized_image = cv2.resize(image, (new_w, new_h))
 
-    # 计算裁剪的起始位置，以便将图像居中
+    # Calculate cropping position to center the image
     crop_y = (new_h - target_height) // 2 if new_h > target_height else 0
     crop_x = (new_w - target_width) // 2 if new_w > target_width else 0
 
-    # 裁剪图像
     cropped_image = resized_image[crop_y:crop_y + target_height, crop_x:crop_x + target_width]
 
     return cropped_image
-
-
-
 def main():
     import cv2
     from tqdm import tqdm
 
-    save_folder = '/home/dragonz/ADaryl/Codes/Python/superpoint22222/pytorch-superpoint22222222/DBOWdescriptors/'  # 指定保存文件夹路径
-    os.makedirs(save_folder, exist_ok=True)  # 如果文件夹不存在则创建
+    save_folder = 'DBOWdescriptors/'  # Specify the folder path to save the files
+    os.makedirs(save_folder, exist_ok=True)  # Create the folder if it doesn't exist
 
     with torch.no_grad():
         device = torch.device('cuda:0')
         model = SuperPointNet_gauss22()
         model = model.to(device)
 
-        weights_path = '/home/dragonz/ADaryl/Codes/Python/superpoint22222/pytorch-superpoint22222222/logs/superpoint_coco_heat2_0/checkpoints/superPointNet_170000_checkpoint.pth.tar'
+        weights_path = 'superPointNet_170000_checkpoint.pth.tar'
         print("weights_path:", weights_path)
 
         weights = torch.load(weights_path, map_location=device)
         model.load_state_dict(weights['model_state_dict'])
         model.eval()
 
-        image_folder = '/home/dragonz/ADaryl/Datasets/COCO2017/test2017'
+        image_folder = 'Datasets/COCO2017/test2017'
 
         hierarchical_descriptors = {}
         batch_size = 5000
         image_files = [f for f in os.listdir(image_folder) if f.endswith(('.png', '.jpg', '.jpeg'))]
 
-        # 处理图像文件，按批次分组
+        # Process image files and group them in batches
         for i, image_name in tqdm(enumerate(image_files), total=len(image_files), desc="Processing images"):
             image_path = os.path.join(image_folder, image_name)
 
             img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
             if img is None:
-                print(f"无法读取图像文件: {image_path}")
+                print(f"Unable to read image file: {image_path}")
                 continue
 
-            # 确保图像尺寸符合要求：裁剪并等比缩放至480x640
+            # Ensure the image size is as required: crop and scale it to 480x640
             img = resize_and_crop(img, target_height=480, target_width=640)
 
-            # 将图像转换为张量并规范化
+            # Convert the image to a tensor and normalize
             img = torch.from_numpy(img).float().unsqueeze(0).unsqueeze(0).to(device) / 255.0
 
             confidence_map, descriptor_map = model(img)
@@ -256,17 +248,15 @@ def main():
                 'descriptors': descriptors
             }
 
-            # 每处理完 `batch_size` 张图像，保存一次
+            # Save after processing each batch of images (batch_size)
             if (i + 1) % batch_size == 0 or (i + 1) == len(image_files):
                 batch_filename = os.path.join(save_folder, f'hierarchical_descriptors_batch_{i // batch_size + 1}.npy')
                 np.save(batch_filename, hierarchical_descriptors, allow_pickle=True)
-                print(f"已保存 {batch_filename}")
-                hierarchical_descriptors.clear()  # 清空当前批次的描述符，准备处理下一批
+                print(f"Saved {batch_filename}")
+                hierarchical_descriptors.clear()  # Clear the current batch's descriptors and prepare for the next batch
 
-        print("所有批次的描述符已保存。")
+        print("All batches of descriptors have been saved.")
 
 
 if __name__ == '__main__':
     main()
-
-
